@@ -257,19 +257,17 @@ std::string execute_http_post(const std::string& url, const std::string& json_da
     return response_buffer;
 }
 
-int main() {
-    std::cout << "--- Klient LLM z Konwersacją ---\n";
-    std::cout << "Wpisz 'exit' żeby zakończyć, 'clear' żeby wyczyścić konwersację\n\n";
+// Forward declarations for refactored helper functions
+void init_config(std::string &model_name, bool &include_history, std::string &role, bool &role_was_prompt);
+std::vector<ChatMessage> prepare_messages(const std::vector<ChatMessage> &conversation_history, const std::string &system_prompt, bool include_history, const std::string &role, const std::string &user_input, bool role_was_prompt);
+std::string send_and_receive(const std::vector<ChatMessage> &messages, const std::string &model_name, float temperature);
+void save_exchange(std::vector<ChatMessage> &conversation_history, const std::string &user_input, const std::string &response_text);
+void repl_loop(std::vector<ChatMessage> &conversation_history, const std::string &model_name, bool include_history, const std::string &role, bool role_was_prompt);
 
-    std::vector<ChatMessage> conversation_history;
-
-    // --- Wczytaj konfigurację z pliku config.ini (jeśli istnieje) ---
-    std::string model_name = DEFAULT_MODEL_NAME;
-    bool include_history = true; // domyślnie dołączamy historię
-
-    // Domyślna rola dla wpisu użytkownika (można nadpisać w config.ini)
-    std::string role = "user";
-    bool role_was_prompt = false;
+// Inicjalizuje konfigurację (wywołuje parse_config i wypisuje skrócony komunikat)
+void init_config(std::string &model_name, bool &include_history, std::string &role, bool &role_was_prompt) {
+    role = "user";
+    role_was_prompt = false;
     if (parse_config("config.ini", model_name, include_history, role, role_was_prompt)) {
         if (role_was_prompt) {
             std::cout << "[CONFIG] model=" << model_name << ", include_history=" << (include_history?"true":"false") << ", ROLE looked like a prompt so SYSTEM_PROMPT was set; sending role=user\n";
@@ -279,12 +277,55 @@ int main() {
     } else {
         std::cout << "[CONFIG] Nie znaleziono config.ini, używam domyślnych ustawień. model=" << model_name << ", role=" << role << "\n";
     }
+}
 
+// Przygotowuje wiadomości do wysłania (waliduje role i uwzględnia historię)
+std::vector<ChatMessage> prepare_messages(const std::vector<ChatMessage> &conversation_history, const std::string &system_prompt, bool include_history, const std::string &role, const std::string &user_input, bool role_was_prompt) {
+    std::vector<ChatMessage> messages_to_send;
+    messages_to_send.push_back({ "system", system_prompt });
+    if (include_history) {
+        for (const auto &msg : conversation_history) {
+            std::string r = msg.role;
+            if (!is_valid_role(r)) {
+                std::cerr << "[WARN] Nieprawidłowa rola w historii: '" << r << "' — używam 'user' zamiast tego.\n";
+                r = "user";
+            }
+            messages_to_send.push_back({ r, msg.content });
+        }
+    }
+
+    std::string send_role = role;
+    if (!is_valid_role(send_role)) {
+        if (!role_was_prompt) {
+            std::cerr << "[WARN] Wartość ROLE=('" << role << "') nie jest jedną z [user,assistant,system,tool]. Używam domyślnej roli 'user' dla wpisu.\n";
+        }
+        send_role = "user";
+    }
+    
+    messages_to_send.push_back({ send_role, user_input });
+    return messages_to_send;
+}
+
+// Wysyła zapytanie i zwraca sparsowaną odpowiedź tekstową (albo pusty string przy błędzie)
+std::string send_and_receive(const std::vector<ChatMessage> &messages, const std::string &model_name, float temperature) {
+    std::string json_payload = build_chat_json_payload2(messages, temperature, model_name, const_cast<std::string&>(messages.back().role));
+    std::string response_json = execute_http_post(API_URL, json_payload);
+    return parse_json_response(response_json);
+}
+
+// Zapisuje wymianę do historii
+void save_exchange(std::vector<ChatMessage> &conversation_history, const std::string &user_input, const std::string &response_text) {
+    conversation_history.push_back({ "user", user_input });
+    conversation_history.push_back({ "assistant", response_text });
+}
+
+// Główna pętla REPL
+void repl_loop(std::vector<ChatMessage> &conversation_history, const std::string &model_name, bool include_history, const std::string &role, bool role_was_prompt) {
     while (true) {
         std::cout << "Ty: ";
         std::string user_input;
         std::getline(std::cin, user_input);
-
+        
         if (user_input == "exit") {
             std::cout << "Do widzenia!\n";
             break;
@@ -295,61 +336,41 @@ int main() {
             std::cout << "Konwersacja wyczyszczona.\n\n";
             continue;
         }
-
-        if (user_input.empty()) {
-            continue;
-        }
-
-            // Przygotuj wiadomości do wysłania
-            std::vector<ChatMessage> messages_to_send;
-            // pierwsza wiadomość to zawsze system prompt (może być nadpisany z config.ini)
-            messages_to_send.push_back({ "system", SYSTEM_PROMPT });
-            if (include_history) {
-                for(const auto& msg : conversation_history) {
-                    // Waliduj role w historii — jeśli jakaś jest niepoprawna, mapuj na "user"
-                    std::string r = msg.role;
-                    if (!is_valid_role(r)) {
-                        std::cerr << "[WARN] Nieprawidłowa rola w historii: '" << r << "' — używam 'user' zamiast tego.\n";
-                        r = "user";
-                    }
-                    messages_to_send.push_back({ r, msg.content });
-                }
-            }
-            // Waliduj role wybrane w konfiguracji dla bieżącego inputu
-            std::string send_role = role;
-            if (!is_valid_role(send_role)) {
-                // Jeśli wartość z ROLE jest niepoprawna, to jeśli już potraktowaliśmy ją jako SYSTEM_PROMPT
-                // (role_was_prompt==true) nie pokazujemy warning przy każdym zapytaniu — tylko stosujemy fallback.
-                if (!role_was_prompt) {
-                    std::cerr << "[WARN] Wartość ROLE=('" << role << "') nie jest jedną z [user,assistant,system,tool]. "
-                              << "Używam domyślnej roli 'user' dla wpisu.\n";
-                }
-                send_role = "user";
-            }
-            messages_to_send.push_back({ send_role, user_input });
-
-
-    // Zbuduj i wyślij zapytanie (użyj model_name i role z config.ini lub domyślnych)
-    std::string json_payload = build_chat_json_payload2(messages_to_send, 0.7, model_name, role);
-        // std::cout << "[DEBUG] JSON Payload: " << json_payload << std::endl; // Odkomentuj do debugowania
         
+        if (user_input.empty()) continue;
+        
+        auto messages = prepare_messages(conversation_history, SYSTEM_PROMPT, include_history, role, user_input, role_was_prompt);
         std::cout << "AI: " << std::flush;
-        std::string response_json = execute_http_post(API_URL, json_payload);
-        std::string response_text = parse_json_response(response_json);
-
-        // Dodano sprawdzenie, czy odpowiedź została poprawnie sparsowana.
-        // Jeśli nie, pętla jest kontynuowana bez dodawania błędnych danych do historii.
+        std::string response_text = send_and_receive(messages, model_name, 0.7f);
+        
         if (response_text.empty()) {
             std::cout << "Błąd: Nie otrzymano poprawnej odpowiedzi od serwera.\n\n";
             continue;
         }
-
+        
         std::cout << response_text << "\n\n";
-
-        // Zapisz do historii tylko udaną wymianę
-        conversation_history.push_back({ "user", user_input });
-        conversation_history.push_back({ "assistant", response_text });
+        save_exchange(conversation_history, user_input, response_text);
     }
+}
+
+int main() {
+    std::cout << "--- Klient LLM z Konwersacją ---\n";
+    std::cout << "Wpisz 'exit' żeby zakończyć, 'clear' żeby wyczyścić konwersację\n\n";
+
+    std::vector<ChatMessage> conversation_history;
+
+    // --- Wczytaj konfigurację z pliku config.ini (jeśli istnieje) ---
+    std::string model_name = DEFAULT_MODEL_NAME;
+    bool include_history = true; // domyślnie dołączamy historię
+
+    // Refaktoryzacja: main teraz deleguje do małych funkcji
+    // Inicjalizacja konfiguracji
+    std::string role = "user";
+    bool role_was_prompt = false;
+    init_config(model_name, include_history, role, role_was_prompt);
+
+    // REPL głównej pętli
+    repl_loop(conversation_history, model_name, include_history, role, role_was_prompt);
 
     return 0;
 }
