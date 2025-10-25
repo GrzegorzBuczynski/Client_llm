@@ -1,0 +1,142 @@
+# Zasady Modularnego Programowania
+
+## Ogólne Podejście
+- KAŻDY kod powinien być podzielony na małe, pojedyncze odpowiedzialność funkcje
+- Funkcja powinna robić JEDNĄ rzecz i robić to dobrze
+- Nie łącz logiki biznesowej, I/O, parsowania i komunikacji sieciowej w jednej funkcji
+
+## Zasady Refaktoryzacji
+
+### 1. Oddzielne Funkcje dla Różnych Obowiązków
+- Escapowanie stringów → osobna funkcja
+- Budowa JSON → osobna funkcja  
+- Wykonanie HTTP request → osobna funkcja
+- Parsowanie odpowiedzi → osobna funkcja
+- I/O operacje → osobna funkcja
+
+### 2. Zasada Single Responsibility
+- Każda funkcja powinna mieć JEDNOZNACZNĄ nazwę opisującą co robi
+- Funkcja nie powinna robić rzeczy "i jeszcze coś tam"
+- Jeśli funkcja robi kilka rzeczy → podziel ją
+
+### 3. Separacja Warstw
+```
+┌─────────────────────────┐
+│   High-level logic      │  (ask_llm)
+├─────────────────────────┤
+│   Business logic        │  (build_json_payload)
+├─────────────────────────┤
+│   Data processing       │  (escape_json_string, parse_json)
+├─────────────────────────┤
+│   Low-level I/O         │  (execute_http_post, WriteCallback)
+└─────────────────────────┘
+```
+
+### 4. Przykład Struktury Funkcji
+```cpp
+// ❌ ZŁE - wszystko w jednej funkcji
+std::string doEverything(std::string input) {
+    // Escapowanie
+    // Budowa JSON
+    // Wykonanie HTTP
+    // Parsowanie
+    // Zwracanie wyniku
+}
+
+// ✅ DOBRE - oddzielne funkcje
+std::string escape_json_string(const std::string&);
+std::string build_json_payload(const std::string&, float, const std::string&);
+std::string execute_http_post(const std::string&, const std::string&);
+std::string parse_json_response(const std::string&);
+std::string ask_llm(const std::string&, const std::string&, float, const std::string&);
+```
+
+## Konwencje Nazewnictwa
+
+### Prefiksy Funkcji
+- `escape_*` - funkcje do escapowania/transformacji danych
+- `build_*` - funkcje do budowy struktur danych
+- `execute_*` - funkcje do wykonania operacji
+- `parse_*` - funkcje do parsowania danych
+- `validate_*` - funkcje do walidacji
+- `get_*` / `set_*` - gettery/settery
+- `is_*` / `has_*` - funkcje logiczne
+
+### Nazwy powinny być:
+- Opisowe: `escape_json_string()` ✅ nie `escape()` ❌
+- Bez prefixów klasowych jeśli są globalne
+- Angielskie (jeśli kod jest po angielsku)
+
+## Zasady Komunikacji z AI
+
+### Gdy użytkownik prosi o funkcję:
+1. Sprawdź czy można podzielić na mniejsze funkcje
+2. Zaproponuj podział na moduły
+3. Implementuj każdy moduł osobno
+4. Pokaż jak funkcje współpracują
+
+### Gdy kod jest za długi:
+1. Znajdź logiczne granice (escapowanie, budowa JSON, HTTP, parsowanie)
+2. Wyodrębnij każdą sekcję do osobnej funkcji
+3. Nazwij funkcję opisowo
+4. Przetestuj każdą funkcję osobno
+
+### Gdy zmieniasz istniejący kod:
+1. NIE modyfikuj istniejących funkcji tak by robiły więcej
+2. ZAMIAST TEGO stwórz nową funkcję i wywołaj starą
+3. Albo podziel starą funkcję na mniejsze
+
+## Przykłady Refaktoryzacji
+
+### Przed:
+```cpp
+void processUserInput() {
+    std::string input;
+    getline(std::cin, input);
+    
+    // Escapowanie
+    input.replace(input.find("\""), 1, "\\\"");
+    
+    // Budowa JSON
+    std::string json = "{\"data\":\"" + input + "\"}";
+    
+    // HTTP
+    CURL *curl = curl_easy_init();
+    // ... 20 linii kodu CURL
+    
+    // Parsowanie odpowiedzi
+    size_t pos = response.find("\"text\":");
+    // ... 10 linii parsowania
+}
+```
+
+### Po:
+```cpp
+std::string escape_json_string(const std::string& str);
+std::string build_json_payload(const std::string& data);
+std::string execute_http_post(const std::string& url, const std::string& json);
+std::string parse_json_response(const std::string& response);
+
+void processUserInput() {
+    std::string input = getUserInput();
+    std::string json = build_json_payload(escape_json_string(input));
+    std::string response = execute_http_post(API_URL, json);
+    std::string result = parse_json_response(response);
+    display(result);
+}
+```
+
+## Testowanie
+- Każda funkcja powinna być testowalna osobno
+- Funkcje nie powinny mieć efektów ubocznych (side effects)
+- Czyste funkcje (pure functions) są łatwiejsze do testowania
+
+## Dokumentacja
+- Każda funkcja powinna mieć komentarz wyjaśniający co robi
+- Parametry powinny być dokumentowane
+- Zwracane wartości powinny być opisane
+
+## Priorytety
+1. Modularność > Wydajność (w większości przypadków)
+2. Czytelność > Krótkość kodu
+3. Testowalność > Łatwość implementacji

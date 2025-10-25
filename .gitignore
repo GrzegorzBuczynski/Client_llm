@@ -1,0 +1,40 @@
+# Ignore compiled binary
+llm_client
+
+# Object files and build artifacts
+*.o
+*.out
+/build/
+cmake-build-*/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+
+# Editor directories and files
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+
+# macOS
+.AppleDouble
+.LSOverride
+
+# Debug and profiling
+*.dSYM/
+
+# Generated files
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Coverage
+coverage/
+
+# Misc
+config.ini.bak
+
