@@ -8,9 +8,13 @@
 #include <cctype>
 
 // --- Stałe konfiguracyjne ---
-const std::string API_URL = "http://127.0.0.1:1234/v1/chat/completions";
+const std::string DEFAULT_API_URL = "http://127.0.0.1:1234/v1/chat/completions";
+// API_URL może być nadpisany przez config.ini
+std::string API_URL = DEFAULT_API_URL;
 // Domyślna nazwa modelu (można nadpisać w config.ini)
 const std::string DEFAULT_MODEL_NAME = "qwen q2";
+// Limit słów w odpowiedzi (0 = bez limitu). Definiowane w kodzie lub przez CLI.
+int MAX_WORDS = 30; // Zmienna X — ustaw tu preferowany limit słów lub nadpisz flagą --max-words
 
 
 // Domyślny system prompt — można nadpisać w config.ini (klucz SYSTEM_PROMPT)
@@ -147,9 +151,13 @@ std::string build_chat_json_payload2(const std::vector<ChatMessage>& messages, f
     }
     json_payload << "],";
 
-    // Używamy max_tokens podobnego do przykładu użytkownika i temperatury z parametru
+    // Używamy max_tokens zależnego od MAX_WORDS (przybliżenie: ~2 tokeny na słowo)
+    int max_tokens = 1024;
+    if (MAX_WORDS > 0) {
+        max_tokens = std::max(16, MAX_WORDS * 2);
+    }
     json_payload << "\"temperature\": " << temperature << ",";
-    json_payload << "\"max_tokens\": 1024";
+    json_payload << "\"max_tokens\": " << max_tokens;
 
     json_payload << "}";
     return json_payload.str();
@@ -160,6 +168,7 @@ bool is_valid_role(const std::string &r) {
     if (r == "user" || r == "assistant" || r == "system" || r == "tool") return true;
     return false;
 }
+
 // --- Parsowanie pliku config.ini ---
 // Zwraca true jeśli plik został wczytany, a wartości model_name/include_history są ustawione.
 // Rozszerzona funkcja: parsuje model, include_history oraz opcjonalnie ROLE
@@ -214,6 +223,8 @@ bool parse_config(const std::string& path, std::string &model_name, bool &includ
             }
         } else if (key == "SYSTEM_PROMPT") {
             if (!value.empty()) SYSTEM_PROMPT = value;
+        } else if (key == "API_URL") {
+            if (!value.empty()) API_URL = value;
         }
     }
 
@@ -263,19 +274,22 @@ std::vector<ChatMessage> prepare_messages(const std::vector<ChatMessage> &conver
 std::string send_and_receive(const std::vector<ChatMessage> &messages, const std::string &model_name, float temperature);
 void save_exchange(std::vector<ChatMessage> &conversation_history, const std::string &user_input, const std::string &response_text);
 void repl_loop(std::vector<ChatMessage> &conversation_history, const std::string &model_name, bool include_history, const std::string &role, bool role_was_prompt);
+void parse_cli_args(int argc, char** argv);
 
 // Inicjalizuje konfigurację (wywołuje parse_config i wypisuje skrócony komunikat)
 void init_config(std::string &model_name, bool &include_history, std::string &role, bool &role_was_prompt) {
     role = "user";
     role_was_prompt = false;
     if (parse_config("config.ini", model_name, include_history, role, role_was_prompt)) {
-        if (role_was_prompt) {
-            std::cout << "[CONFIG] model=" << model_name << ", include_history=" << (include_history?"true":"false") << ", ROLE looked like a prompt so SYSTEM_PROMPT was set; sending role=user\n";
-        } else {
-            std::cout << "[CONFIG] model=" << model_name << ", include_history=" << (include_history?"true":"false") << ", role=" << role << "\n";
-        }
+        std::cout << "[CONFIG] model=" << model_name
+                  << ", include_history=" << (include_history?"true":"false")
+                  << ", api_url=" << API_URL
+                  << ", max_words=" << (MAX_WORDS > 0 ? std::to_string(MAX_WORDS) : std::string("unlimited"))
+                  << (role_was_prompt ? ", role=user (ROLE looked like prompt, set as SYSTEM_PROMPT)\n" : (std::string(", role=") + role + "\n"));
     } else {
-        std::cout << "[CONFIG] Nie znaleziono config.ini, używam domyślnych ustawień. model=" << model_name << ", role=" << role << "\n";
+    std::cout << "[CONFIG] Nie znaleziono config.ini, używam domyślnych ustawień. model=" << model_name
+          << ", api_url=" << API_URL
+          << ", role=" << role << "\n";
     }
 }
 
@@ -283,6 +297,9 @@ void init_config(std::string &model_name, bool &include_history, std::string &ro
 std::vector<ChatMessage> prepare_messages(const std::vector<ChatMessage> &conversation_history, const std::string &system_prompt, bool include_history, const std::string &role, const std::string &user_input, bool role_was_prompt) {
     std::vector<ChatMessage> messages_to_send;
     messages_to_send.push_back({ "system", system_prompt });
+    if (MAX_WORDS > 0) {
+        messages_to_send.push_back({ "system", std::string("Please answer in no more than ") + std::to_string(MAX_WORDS) + " words." });
+    }
     if (include_history) {
         for (const auto &msg : conversation_history) {
             std::string r = msg.role;
@@ -310,7 +327,8 @@ std::vector<ChatMessage> prepare_messages(const std::vector<ChatMessage> &conver
 std::string send_and_receive(const std::vector<ChatMessage> &messages, const std::string &model_name, float temperature) {
     std::string json_payload = build_chat_json_payload2(messages, temperature, model_name, const_cast<std::string&>(messages.back().role));
     std::string response_json = execute_http_post(API_URL, json_payload);
-    return parse_json_response(response_json);
+    std::string response_text = parse_json_response(response_json);
+    return response_text;
 }
 
 // Zapisuje wymianę do historii
@@ -331,9 +349,41 @@ void repl_loop(std::vector<ChatMessage> &conversation_history, const std::string
             break;
         }
 
+        // Interaktywne ustawianie limitu (opcjonalne): setmax N
+        if (user_input.rfind("setmax ", 0) == 0) {
+            std::string n = user_input.substr(7);
+            try {
+                int v = std::stoi(n);
+                MAX_WORDS = v >= 0 ? v : 0;
+                std::cout << "[INFO] Ustawiono MAX_WORDS=" << MAX_WORDS << "\n\n";
+            } catch (...) {
+                std::cout << "[WARN] Niepoprawna liczba. Użycie: setmax N (N>=0).\n\n";
+            }
+            continue;
+        }
+
+        // Sprawdzenie aktualnego limitu słów: max / showmax
+        if (user_input == "max" || user_input == "showmax") {
+            if (MAX_WORDS > 0) {
+                std::cout << "[INFO] Aktualny limit słów: " << MAX_WORDS << "\n\n";
+            } else {
+                std::cout << "[INFO] Limit słów: wyłączony (bez limitu)\n\n";
+            }
+            continue;
+        }
+
         if (user_input == "clear") {
             conversation_history.clear();
             std::cout << "Konwersacja wyczyszczona.\n\n";
+            continue;
+        }
+        if (user_input == "help") {
+            std::cout << "Dostępne komendy:\n"
+                         "  exit          - zakończ program\n"
+                         "  clear         - wyczyść historię konwersacji\n"
+                         "  setmax N      - ustaw maksymalną liczbę słów w odpowiedzi (N>=0, 0 = bez limitu)\n"
+                         "  max|showmax   - pokaż aktualny limit słów\n"
+                         "  help          - wyświetl tę pomoc\n\n";
             continue;
         }
         
@@ -353,7 +403,7 @@ void repl_loop(std::vector<ChatMessage> &conversation_history, const std::string
     }
 }
 
-int main() {
+int main(int argc, char** argv) {
     std::cout << "--- Klient LLM z Konwersacją ---\n";
     std::cout << "Wpisz 'exit' żeby zakończyć, 'clear' żeby wyczyścić konwersację\n\n";
 
@@ -362,6 +412,9 @@ int main() {
     // --- Wczytaj konfigurację z pliku config.ini (jeśli istnieje) ---
     std::string model_name = DEFAULT_MODEL_NAME;
     bool include_history = true; // domyślnie dołączamy historię
+
+    // CLI: obsłuż argumenty w dedykowanej funkcji
+    parse_cli_args(argc, argv);
 
     // Refaktoryzacja: main teraz deleguje do małych funkcji
     // Inicjalizacja konfiguracji
@@ -373,4 +426,38 @@ int main() {
     repl_loop(conversation_history, model_name, include_history, role, role_was_prompt);
 
     return 0;
+}
+
+// Proste parsowanie argumentów wiersza poleceń
+void parse_cli_args(int argc, char** argv) {
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--no-limit") {
+            MAX_WORDS = 0;
+        } else if (arg == "-w" || arg == "--max-words") {
+            if (i + 1 < argc) {
+                try {
+                    int v = std::stoi(argv[++i]);
+                    MAX_WORDS = v >= 0 ? v : 0;
+                } catch (...) {
+                    std::cerr << "[WARN] Niepoprawna wartość dla --max-words, ignoruję.\n";
+                }
+            } else {
+                std::cerr << "[WARN] Brak wartości po --max-words. Użycie: --max-words N\n";
+            }
+        } else if (arg.rfind("--max-words=", 0) == 0) {
+            std::string val = arg.substr(std::string("--max-words=").size());
+            try {
+                int v = std::stoi(val);
+                MAX_WORDS = v >= 0 ? v : 0;
+            } catch (...) {
+                std::cerr << "[WARN] Niepoprawna wartość dla --max-words, ignoruję.\n";
+            }
+        } else if (arg == "-h" || arg == "--help") {
+            std::cout << "Użycie: ./llm_client [opcje]\n"
+                         "  -w, --max-words N     Ustaw maksymalną liczbę słów w odpowiedzi (N>=0)\n"
+                         "      --max-words=N     Jak wyżej, forma z '='\n"
+                         "      --no-limit        Wyłącz limit słów\n";
+        }
+    }
 }
