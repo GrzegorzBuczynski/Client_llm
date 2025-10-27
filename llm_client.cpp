@@ -270,7 +270,8 @@ std::string execute_http_post(const std::string& url, const std::string& json_da
 
 // Forward declarations for refactored helper functions
 void init_config(std::string &model_name, bool &include_history, std::string &role, bool &role_was_prompt);
-std::vector<ChatMessage> prepare_messages(const std::vector<ChatMessage> &conversation_history, const std::string &system_prompt, bool include_history, const std::string &role, const std::string &user_input, bool role_was_prompt);
+// NOTE: conversation_history removed — we do NOT send history to the model anymore
+std::vector<ChatMessage> prepare_messages(const std::string &system_prompt,  const std::string &role, const std::string &user_input, bool role_was_prompt);
 std::string send_and_receive(const std::vector<ChatMessage> &messages, const std::string &model_name, float temperature);
 void save_exchange(std::vector<ChatMessage> &conversation_history, const std::string &user_input, const std::string &response_text);
 void repl_loop(std::vector<ChatMessage> &conversation_history, const std::string &model_name, bool include_history, const std::string &role, bool role_was_prompt);
@@ -293,23 +294,14 @@ void init_config(std::string &model_name, bool &include_history, std::string &ro
     }
 }
 
-// Przygotowuje wiadomości do wysłania (waliduje role i uwzględnia historię)
-std::vector<ChatMessage> prepare_messages(const std::vector<ChatMessage> &conversation_history, const std::string &system_prompt, bool include_history, const std::string &role, const std::string &user_input, bool role_was_prompt) {
+// Przygotowuje wiadomości do wysłania (waliduje role). Historia konwersacji NIE JEST wysyłana do modelu.
+std::vector<ChatMessage> prepare_messages(const std::string &system_prompt, const std::string &role, const std::string &user_input, bool role_was_prompt) {
     std::vector<ChatMessage> messages_to_send;
     messages_to_send.push_back({ "system", system_prompt });
     if (MAX_WORDS > 0) {
         messages_to_send.push_back({ "system", std::string("Please answer in no more than ") + std::to_string(MAX_WORDS) + " words." });
     }
-    if (include_history) {
-        for (const auto &msg : conversation_history) {
-            std::string r = msg.role;
-            if (!is_valid_role(r)) {
-                std::cerr << "[WARN] Nieprawidłowa rola w historii: '" << r << "' — używam 'user' zamiast tego.\n";
-                r = "user";
-            }
-            messages_to_send.push_back({ r, msg.content });
-        }
-    }
+
 
     std::string send_role = role;
     if (!is_valid_role(send_role)) {
@@ -318,7 +310,7 @@ std::vector<ChatMessage> prepare_messages(const std::vector<ChatMessage> &conver
         }
         send_role = "user";
     }
-    
+
     messages_to_send.push_back({ send_role, user_input });
     return messages_to_send;
 }
@@ -388,8 +380,8 @@ void repl_loop(std::vector<ChatMessage> &conversation_history, const std::string
         }
         
         if (user_input.empty()) continue;
-        
-        auto messages = prepare_messages(conversation_history, SYSTEM_PROMPT, include_history, role, user_input, role_was_prompt);
+
+    auto messages = prepare_messages(SYSTEM_PROMPT, role, user_input, role_was_prompt);
         std::cout << "AI: " << std::flush;
         std::string response_text = send_and_receive(messages, model_name, 0.7f);
         
@@ -399,7 +391,7 @@ void repl_loop(std::vector<ChatMessage> &conversation_history, const std::string
         }
         
         std::cout << response_text << "\n\n";
-        save_exchange(conversation_history, user_input, response_text);
+        // save_exchange(conversation_history, user_input, response_text);
     }
 }
 
@@ -411,7 +403,7 @@ int main(int argc, char** argv) {
 
     // --- Wczytaj konfigurację z pliku config.ini (jeśli istnieje) ---
     std::string model_name = DEFAULT_MODEL_NAME;
-    bool include_history = true; // domyślnie dołączamy historię
+    bool include_history = false; // domyślnie nie dołączamy historii
 
     // CLI: obsłuż argumenty w dedykowanej funkcji
     parse_cli_args(argc, argv);
